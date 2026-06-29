@@ -6,10 +6,12 @@ on:
   workflow_dispatch: {}
 
 env:
-  # Repos de ECR (no son secretos, solo nombres)
   ECR_REPO_FRONTEND: tienda-frontend
   ECR_REPO_BACKEND: tienda-backend
   ECR_REPO_DB: tienda-db
+  AWS_REGION: us-east-1
+  EKS_CLUSTER_NAME: innovatech-cluster
+  EKS_NAMESPACE: tienda
 
 jobs:
   build-and-deploy:
@@ -24,7 +26,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
 
       - name: Login a Amazon ECR
@@ -52,7 +54,7 @@ jobs:
           docker build -t $ECR_REGISTRY/${ECR_REPO_BACKEND}:${IMAGE_TAG} .
           docker push $ECR_REGISTRY/${ECR_REPO_BACKEND}:${IMAGE_TAG}
 
-      # ---------- DB (opcional) ----------
+      # ---------- DB ----------
       - name: Build & push DB
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -69,64 +71,53 @@ jobs:
 
       # ---------- Configurar kubeconfig de EKS ----------
       - name: Configurar kubeconfig para EKS
-        env:
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
         run: |
           aws eks update-kubeconfig \
-            --region $AWS_REGION \
-            --name $EKS_CLUSTER_NAME
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ env.EKS_CLUSTER_NAME }}
           kubectl config current-context
 
       # ---------- Aplicar manifests base ----------
       - name: Aplicar manifests base (namespace, DB, servicios)
-        env:
-          EKS_NAMESPACE: ${{ secrets.EKS_NAMESPACE }}
         run: |
           kubectl apply -f k8s/namespace.yaml
-          kubectl apply -f k8s/mysql-secret.yaml -n $EKS_NAMESPACE
-          kubectl apply -f k8s/mysql-deployment.yaml -n $EKS_NAMESPACE
-          kubectl apply -f k8s/mysql-service.yaml -n $EKS_NAMESPACE
+          kubectl apply -f k8s/mysql-secret.yaml -n ${{ env.EKS_NAMESPACE }}
+          kubectl apply -f k8s/mysql-deployment.yaml -n ${{ env.EKS_NAMESPACE }}
+          kubectl apply -f k8s/mysql-service.yaml -n ${{ env.EKS_NAMESPACE }}
 
       # ---------- Actualizar BACKEND en EKS ----------
       - name: Actualizar BACKEND en EKS
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          EKS_NAMESPACE: ${{ secrets.EKS_NAMESPACE }}
         run: |
-          kubectl apply -f k8s/backend-deployment.yaml -n $EKS_NAMESPACE
-          kubectl apply -f k8s/backend-service.yaml -n $EKS_NAMESPACE
+          kubectl apply -f k8s/backend-deployment.yaml -n ${{ env.EKS_NAMESPACE }}
+          kubectl apply -f k8s/backend-service.yaml -n ${{ env.EKS_NAMESPACE }}
           kubectl set image deployment/tienda-backend \
             backend=$ECR_REGISTRY/${ECR_REPO_BACKEND}:${IMAGE_TAG} \
-            -n $EKS_NAMESPACE
-          kubectl rollout status deployment/tienda-backend -n $EKS_NAMESPACE
+            -n ${{ env.EKS_NAMESPACE }}
+          kubectl rollout status deployment/tienda-backend -n ${{ env.EKS_NAMESPACE }}
 
       # ---------- Actualizar FRONTEND en EKS ----------
       - name: Actualizar FRONTEND en EKS
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          EKS_NAMESPACE: ${{ secrets.EKS_NAMESPACE }}
         run: |
-          kubectl apply -f k8s/frontend-deployment.yaml -n $EKS_NAMESPACE
-          kubectl apply -f k8s/frontend-service.yaml -n $EKS_NAMESPACE
+          kubectl apply -f k8s/frontend-deployment.yaml -n ${{ env.EKS_NAMESPACE }}
+          kubectl apply -f k8s/frontend-service.yaml -n ${{ env.EKS_NAMESPACE }}
           kubectl set image deployment/tienda-frontend \
             frontend=$ECR_REGISTRY/${ECR_REPO_FRONTEND}:${IMAGE_TAG} \
-            -n $EKS_NAMESPACE
-          kubectl rollout status deployment/tienda-frontend -n $EKS_NAMESPACE
+            -n ${{ env.EKS_NAMESPACE }}
+          kubectl rollout status deployment/tienda-frontend -n ${{ env.EKS_NAMESPACE }}
 
-      # ---------- HPA (si existen los YAML) ----------
+      # ---------- HPA ----------
       - name: Aplicar HPA (opcional)
-        env:
-          EKS_NAMESPACE: ${{ secrets.EKS_NAMESPACE }}
         run: |
-          if [ -f k8s/backend-hpa.yaml ]; then kubectl apply -f k8s/backend-hpa.yaml -n $EKS_NAMESPACE; fi
-          if [ -f k8s/frontend-hpa.yaml ]; then kubectl apply -f k8s/frontend-hpa.yaml -n $EKS_NAMESPACE; fi
+          if [ -f k8s/backend-hpa.yaml ]; then kubectl apply -f k8s/backend-hpa.yaml -n ${{ env.EKS_NAMESPACE }}; fi
+          if [ -f k8s/frontend-hpa.yaml ]; then kubectl apply -f k8s/frontend-hpa.yaml -n ${{ env.EKS_NAMESPACE }}; fi
 
       # ---------- Ver estado final ----------
       - name: Ver pods y servicios
-        env:
-          EKS_NAMESPACE: ${{ secrets.EKS_NAMESPACE }}
         run: |
-          kubectl get pods -n $EKS_NAMESPACE
-          kubectl get svc -n $EKS_NAMESPACE
-          kubectl get hpa -n $EKS_NAMESPACE || true
+          kubectl get pods -n ${{ env.EKS_NAMESPACE }}
+          kubectl get svc -n ${{ env.EKS_NAMESPACE }}
+          kubectl get hpa -n ${{ env.EKS_NAMESPACE }} || true
